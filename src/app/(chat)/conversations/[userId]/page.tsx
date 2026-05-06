@@ -175,6 +175,58 @@ export default function ConversationThreadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.privateKey, auth.accessToken, userId, myUserId]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncLatest = async () => {
+      try {
+        const items = await auth.withAccessToken((accessToken) =>
+          whisperbox.getMessages(userId, { limit: 50 }, { accessToken }),
+        );
+        const ui = await Promise.all(items.slice().reverse().map(toUi));
+        if (cancelled) return;
+
+        setMessages((prev) => {
+          const serverById = new Map(ui.map((m) => [m.id, m] as const));
+          const next: UiMessage[] = [];
+
+          // Keep optimistic messages that do not yet exist on server.
+          for (const old of prev) {
+            if (old.id.startsWith("temp_")) {
+              next.push(old);
+              continue;
+            }
+            const fresh = serverById.get(old.id);
+            if (fresh) {
+              next.push({ ...old, ...fresh, pending: false });
+              serverById.delete(old.id);
+            }
+          }
+
+          for (const fresh of ui) {
+            if (!next.some((m) => m.id === fresh.id)) next.push(fresh);
+          }
+
+          next.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+          return next;
+        });
+      } catch {
+        // Ignore periodic sync failures; websocket may still deliver.
+      }
+    };
+
+    void syncLatest();
+    const id = window.setInterval(() => {
+      void syncLatest();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.accessToken, auth.privateKey, userId, myUserId]);
+
   const presenceLine = useMemo(() => {
     if (auth.wsStatus === "open") return "online · end-to-end encrypted";
     if (auth.wsStatus === "reconnecting") return "reconnecting…";
